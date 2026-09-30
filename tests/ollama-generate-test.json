@@ -1,0 +1,5 @@
+{
+  "model": "llama3.2:3b",
+  "prompt": "Reply exactly with: OLLAMA GENERATE WORKING",
+  "stream": false
+}

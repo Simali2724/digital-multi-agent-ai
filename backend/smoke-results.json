@@ -1,0 +1,64 @@
+{
+  "health": {
+    "status": "ok",
+    "service": "reliance-digital-ai",
+    "default_provider": "auto",
+    "data_mode": "mock",
+    "models": [
+      {
+        "provider": "auto",
+        "model": "Automatic routing",
+        "configured": true
+      },
+      {
+        "provider": "claude",
+        "model": "claude-sonnet-5-5",
+        "configured": false
+      },
+      {
+        "provider": "chatgpt",
+        "model": "gpt-6-astra",
+        "configured": false
+      },
+      {
+        "provider": "ollama",
+        "model": "llama3.2:3b",
+        "configured": true
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "price",
+      "passed": false,
+      "provider": null,
+      "agent": null,
+      "retrieval_mode": null,
+      "answer": ""
+    },
+    {
+      "name": "ticket",
+      "passed": true,
+      "provider": "ollama",
+      "agent": "resq_agent",
+      "retrieval_mode": null,
+      "answer": "The status of SR-1001 is currently \"In Progress\"."
+    },
+    {
+      "name": "order",
+      "passed": true,
+      "provider": "ollama",
+      "agent": "sales_agent",
+      "retrieval_mode": null,
+      "answer": "The status of ORD-9001 is \"Delivered\" and the order details are as follows: customer Rahul Sharma, product LG 55\\\" 4K Smart OLED TV (P001), amount ₹129,999."
+    },
+    {
+      "name": "rag",
+      "passed": true,
+      "provider": "ollama",
+      "agent": "rag_agent",
+      "retrieval_mode": "semantic",
+      "answer": "The demo warranty for Daikin 1.5 Ton 5-Star Inverter Split AC (P002) is 60 months."
+    }
+  ]
+}

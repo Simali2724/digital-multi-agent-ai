@@ -1,0 +1,34 @@
+[
+  {
+    "id": "ORD-9001",
+    "customer": "Rahul Sharma",
+    "product_id": "P001",
+    "status": "Delivered",
+    "amount": "₹129,999",
+    "is_mock": true
+  },
+  {
+    "id": "ORD-9002",
+    "customer": "Demo Customer A",
+    "product_id": "P006",
+    "status": "Processing",
+    "amount": "₹34,990",
+    "is_mock": true
+  },
+  {
+    "id": "ORD-9003",
+    "customer": "Demo Customer B",
+    "product_id": "P007",
+    "status": "Shipped",
+    "amount": "₹54,990",
+    "is_mock": true
+  },
+  {
+    "id": "ORD-9004",
+    "customer": "Demo Customer C",
+    "product_id": "P010",
+    "status": "Cancelled",
+    "amount": "₹4,990",
+    "is_mock": true
+  }
+]

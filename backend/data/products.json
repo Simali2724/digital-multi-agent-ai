@@ -1,0 +1,72 @@
+[
+  {
+    "id": "P001",
+    "name": "LG 55\" 4K Smart OLED TV",
+    "price": "₹129,999",
+    "warranty_months": 24,
+    "is_mock": true
+  },
+  {
+    "id": "P002",
+    "name": "Daikin 1.5 Ton 5-Star Inverter Split AC",
+    "price": "₹48,999",
+    "warranty_months": 60,
+    "is_mock": true
+  },
+  {
+    "id": "P003",
+    "name": "Samsung 256L 3-Star Frost-Free Refrigerator",
+    "price": "₹27,490",
+    "warranty_months": 12,
+    "is_mock": true
+  },
+  {
+    "id": "P004",
+    "name": "Sony WH-1000XM5 Wireless Headphones",
+    "price": "₹26,990",
+    "warranty_months": 12,
+    "is_mock": true
+  },
+  {
+    "id": "P005",
+    "name": "Apple iPhone 16 128GB",
+    "price": "₹69,900",
+    "warranty_months": 12,
+    "is_mock": true
+  },
+  {
+    "id": "P006",
+    "name": "Demo 8kg Front-load Washing Machine",
+    "price": "₹34,990",
+    "warranty_months": 24,
+    "is_mock": true
+  },
+  {
+    "id": "P007",
+    "name": "Demo 15-inch Laptop 16GB 512GB",
+    "price": "₹54,990",
+    "warranty_months": 12,
+    "is_mock": true
+  },
+  {
+    "id": "P008",
+    "name": "Demo 20L Solo Microwave",
+    "price": "₹7,490",
+    "warranty_months": 12,
+    "is_mock": true
+  },
+  {
+    "id": "P009",
+    "name": "Demo 2.1 Channel Soundbar",
+    "price": "₹12,990",
+    "warranty_months": 12,
+    "is_mock": true
+  },
+  {
+    "id": "P010",
+    "name": "Demo Wi-Fi 6 Router",
+    "price": "₹4,990",
+    "warranty_months": 24,
+    "is_mock": true
+  }
+]

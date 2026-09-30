@@ -1,0 +1,42 @@
+[
+  {
+    "id": "SR-1001",
+    "customer": "Rahul Sharma",
+    "product_id": "P001",
+    "issue": "TV screen flickering",
+    "status": "In Progress",
+    "is_mock": true
+  },
+  {
+    "id": "SR-1002",
+    "customer": "Priya Patel",
+    "product_id": "P002",
+    "issue": "AC not cooling properly",
+    "status": "Resolved",
+    "is_mock": true
+  },
+  {
+    "id": "SR-1003",
+    "customer": "Demo Customer A",
+    "product_id": "P006",
+    "issue": "Excessive vibration",
+    "status": "Awaiting appointment",
+    "is_mock": true
+  },
+  {
+    "id": "SR-1004",
+    "customer": "Demo Customer B",
+    "product_id": "P007",
+    "issue": "Battery not charging",
+    "status": "Awaiting parts",
+    "is_mock": true
+  },
+  {
+    "id": "SR-1005",
+    "customer": "Demo Customer C",
+    "product_id": "P010",
+    "issue": "Intermittent Wi-Fi",
+    "status": "Resolved",
+    "is_mock": true
+  }
+]
