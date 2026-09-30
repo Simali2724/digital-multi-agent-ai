@@ -16,13 +16,27 @@ class AppTests(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
 
+    # def test_health_and_data_integrity(self):
+    #     health = self.client.get('/health').json()
+    #     self.assertEqual(health['default_provider'], 'auto')
+    #     self.assertEqual([m['provider'] for m in health['models']], ['auto','claude','chatgpt','ollama'])
+    #     products = self.client.get('/products').json()
+    #     self.assertEqual(len(products), 10)
+    #     self.assertTrue(all(p['is_mock'] for p in products))
+    #     self.assertEqual(len(self.client.get('/tickets').json()), 5)
+    #     self.assertEqual(len(self.client.get('/orders').json()), 4)
     def test_health_and_data_integrity(self):
         health = self.client.get('/health').json()
         self.assertEqual(health['default_provider'], 'auto')
-        self.assertEqual([m['provider'] for m in health['models']], ['auto','claude','chatgpt','ollama'])
+        self.assertEqual(
+        [m['provider'] for m in health['models']],
+        ['auto', 'claude', 'chatgpt', 'gemini', 'ollama'],
+    )
+
         products = self.client.get('/products').json()
         self.assertEqual(len(products), 10)
         self.assertTrue(all(p['is_mock'] for p in products))
+
         self.assertEqual(len(self.client.get('/tickets').json()), 5)
         self.assertEqual(len(self.client.get('/orders').json()), 4)
 
@@ -31,15 +45,48 @@ class AppTests(unittest.TestCase):
             self.assertEqual(route_query(query), expected)
         self.assertEqual(route_query('What next?', [{'role':'user','content':'AC not cooling'}]), 'rag_agent')
 
+    # def test_provider_order(self):
+    #     with patch.dict(os.environ, {'OPENAI_API_KEY':'test-openai','ANTHROPIC_API_KEY':'test-anthropic'}):
+    #         self.assertEqual(provider_order('auto','sales_agent'), ['chatgpt','claude','ollama'])
+    #         self.assertEqual(provider_order('auto','rag_agent'), ['claude','chatgpt','ollama'])
+    #     self.assertEqual(provider_order('claude','sales_agent'), ['claude','ollama'])
     def test_provider_order(self):
-        with patch.dict(os.environ, {'OPENAI_API_KEY':'test-openai','ANTHROPIC_API_KEY':'test-anthropic'}):
-            self.assertEqual(provider_order('auto','sales_agent'), ['chatgpt','claude','ollama'])
-            self.assertEqual(provider_order('auto','rag_agent'), ['claude','chatgpt','ollama'])
-        self.assertEqual(provider_order('claude','sales_agent'), ['claude','ollama'])
+        with patch.dict(
+            os.environ,
+            {
+                'OPENAI_API_KEY': 'test-openai',
+                'ANTHROPIC_API_KEY': 'test-anthropic',
+                'GOOGLE_API_KEY': 'test-google',
+            },
+        ):
+            self.assertEqual(
+                provider_order('auto', 'sales_agent'),
+                ['gemini', 'chatgpt', 'claude', 'ollama'],
+            )
+
+            self.assertEqual(
+                provider_order('auto', 'rag_agent'),
+                ['gemini', 'chatgpt', 'claude', 'ollama'],
+            )
+
+        self.assertEqual(
+            provider_order('claude', 'sales_agent'),
+            ['claude', 'ollama'],
+        )
 
     def test_missing_keys(self):
-        with patch.dict(os.environ, {'OPENAI_API_KEY':'your_key_here','ANTHROPIC_API_KEY':''}):
-            self.assertEqual(provider_order('auto','rag_agent'), ['ollama'])
+        with patch.dict(
+        os.environ,
+        {
+            'OPENAI_API_KEY': 'your_key_here',
+            'ANTHROPIC_API_KEY': '',
+            'GOOGLE_API_KEY': '',
+        },
+    ):
+            self.assertEqual(
+            provider_order('auto', 'rag_agent'),
+            ['ollama'],
+        )
 
     def test_cloud_failure_uses_ollama(self):
         calls = []
@@ -71,9 +118,36 @@ class AppTests(unittest.TestCase):
         self.assertNotIn('private', response.text)
         self.assertNotIn('secret', response.text)
 
+    # def test_invalid_requests(self):
+    #     for request in ({'message':' '}, {'message':'test','provider':'gemini'}, {'message':'test','history':[{'role':'system','content':'x'}]}):
+    #         self.assertEqual(self.client.post('/chat/stream', json=request).status_code, 422)
+
     def test_invalid_requests(self):
-        for request in ({'message':' '}, {'message':'test','provider':'gemini'}, {'message':'test','history':[{'role':'system','content':'x'}]}):
-            self.assertEqual(self.client.post('/chat/stream', json=request).status_code, 422)
+        invalid_requests = (
+            {'message': ' '},
+            {
+                'message': 'test',
+                'provider': 'invalid-provider',
+            },
+            {
+                'message': 'test',
+                'history': [
+                    {
+                        'role': 'system',
+                        'content': 'x',
+                    },
+                ],
+            },
+        )
+
+        for request in invalid_requests:
+            self.assertEqual(
+                self.client.post(
+                    '/chat/stream',
+                    json=request,
+                ).status_code,
+                422,
+            )
 
     def test_keyword_fallback(self):
         async def answer(provider, agent, messages):
