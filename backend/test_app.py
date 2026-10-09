@@ -1,5 +1,6 @@
 
 import asyncio
+import json
 import os
 import tempfile
 import unittest
@@ -12,7 +13,7 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import HumanMessage
 
 from llm.factory import answer_with_fallback, provider_order
-from llm.router import route_query
+from llm.router import detect_intent, route_query
 from privacy import public_answer
 from main import app
 
@@ -22,14 +23,17 @@ class AppTests(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
 
-    # --------------------------------------------------------
-    # Health and demo data tests
-    # --------------------------------------------------------
+    # ========================================================
+    # 1. HEALTH AND DEMO DATA TESTS
+    # ========================================================
 
     def test_health_and_data_integrity(self):
         health = self.client.get('/health').json()
 
-        self.assertEqual(health['default_provider'], 'auto')
+        self.assertEqual(
+            health['default_provider'],
+            'auto',
+        )
 
         self.assertEqual(
             [model['provider'] for model in health['models']],
@@ -39,14 +43,24 @@ class AppTests(unittest.TestCase):
         products = self.client.get('/products').json()
 
         self.assertEqual(len(products), 10)
-        self.assertTrue(all(p['is_mock'] for p in products))
 
-        self.assertEqual(len(self.client.get('/tickets').json()), 5)
-        self.assertEqual(len(self.client.get('/orders').json()), 4)
+        self.assertTrue(
+            all(product['is_mock'] for product in products)
+        )
 
-    # --------------------------------------------------------
-    # Existing agent routing tests
-    # --------------------------------------------------------
+        self.assertEqual(
+            len(self.client.get('/tickets').json()),
+            5,
+        )
+
+        self.assertEqual(
+            len(self.client.get('/orders').json()),
+            4,
+        )
+
+    # ========================================================
+    # 2. EXISTING AGENT ROUTING TESTS
+    # ========================================================
 
     def test_routes_and_followup(self):
         cases = [
@@ -57,10 +71,10 @@ class AppTests(unittest.TestCase):
             ('P001 price', 'sales_agent'),
         ]
 
-        for query, expected_agent in cases:
-            with self.subTest(query=query):
+        for message, expected_agent in cases:
+            with self.subTest(message=message):
                 self.assertEqual(
-                    route_query(query),
+                    route_query(message),
                     expected_agent,
                 )
 
@@ -76,40 +90,160 @@ class AppTests(unittest.TestCase):
             'rag_agent',
         )
 
-    # --------------------------------------------------------
-    # Jira AIRM-47 regression tests
-    # --------------------------------------------------------
+    # ========================================================
+    # 3. JIRA AIRM-47: INTENT DETECTION TEST
+    # ========================================================
 
     def test_airm47_intent_routing(self):
         cases = [
             (
                 'Screen has started flickering',
+                'TECHNICAL_SUPPORT',
                 'rag_agent',
             ),
             (
                 'Status of order RD9999999',
+                'ORDER_STATUS',
                 'sales_agent',
             ),
             (
                 'Connect me to a human',
+                'HUMAN_HANDOFF',
                 'resq_agent',
             ),
         ]
 
-        for message, expected_agent in cases:
+        for message, expected_intent, expected_agent in cases:
             with self.subTest(message=message):
+                actual_intent = detect_intent(message)
                 actual_agent = route_query(message)
+
+                self.assertEqual(
+                    actual_intent,
+                    expected_intent,
+                )
 
                 self.assertEqual(
                     actual_agent,
                     expected_agent,
                 )
 
-    # --------------------------------------------------------
-    # LLM provider selection tests
-    # --------------------------------------------------------
+    # ========================================================
+    # 4. JIRA AIRM-47: API STREAM METADATA TEST
+    # ========================================================
+
+    def test_airm47_stream_metadata(self):
+
+        async def fake_graph(data):
+            return {
+                'agent': route_query(data['message']),
+                'system_prompt': 'Test prompt',
+            }
+
+        async def fake_answer(*args):
+            return 'Test response', 'ollama'
+
+        cases = [
+            (
+                'Screen has started flickering',
+                'TECHNICAL_SUPPORT',
+                'rag_agent',
+            ),
+            (
+                'Status of order RD9999999',
+                'ORDER_STATUS',
+                'sales_agent',
+            ),
+            (
+                'Connect me to a human',
+                'HUMAN_HANDOFF',
+                'resq_agent',
+            ),
+        ]
+
+        with (
+            patch(
+                'main.GRAPH.ainvoke',
+                side_effect=fake_graph,
+            ),
+            patch(
+                'main.answer_with_fallback',
+                side_effect=fake_answer,
+            ),
+        ):
+
+            for message, expected_intent, expected_agent in cases:
+
+                with self.subTest(message=message):
+
+                    response = self.client.post(
+                        '/chat/stream',
+                        json={'message': message},
+                    )
+
+                    self.assertEqual(
+                        response.status_code,
+                        200,
+                    )
+
+                    events = []
+                    event_type = None
+
+                    for line in response.text.splitlines():
+
+                        if line.startswith('event: '):
+                            event_type = line[7:]
+
+                        elif line.startswith('data: '):
+                            data = json.loads(line[6:])
+                            events.append((event_type, data))
+
+                    meta_events = [
+                        data
+                        for name, data in events
+                        if name == 'meta'
+                    ]
+
+                    done_events = [
+                        data
+                        for name, data in events
+                        if name == 'done'
+                    ]
+
+                    # API should send intent and agent.
+                    self.assertGreaterEqual(
+                        len(meta_events),
+                        1,
+                    )
+
+                    for metadata in meta_events:
+                        self.assertEqual(
+                            metadata.get('intent'),
+                            expected_intent,
+                        )
+
+                        self.assertEqual(
+                            metadata.get('agent'),
+                            expected_agent,
+                        )
+
+                    # Successful completion should contain
+                    # the same intent and agent.
+                    self.assertTrue(
+                        any(
+                            event.get('ok') is True
+                            and event.get('intent') == expected_intent
+                            and event.get('agent') == expected_agent
+                            for event in done_events
+                        )
+                    )
+
+    # ========================================================
+    # 5. LLM PROVIDER SELECTION TESTS
+    # ========================================================
 
     def test_provider_order(self):
+
         with patch.dict(
             os.environ,
             {
@@ -118,6 +252,7 @@ class AppTests(unittest.TestCase):
                 'GOOGLE_API_KEY': 'test-google',
             },
         ):
+
             self.assertEqual(
                 provider_order('auto', 'sales_agent'),
                 ['gemini', 'chatgpt', 'claude', 'ollama'],
@@ -134,6 +269,7 @@ class AppTests(unittest.TestCase):
         )
 
     def test_missing_keys(self):
+
         with patch.dict(
             os.environ,
             {
@@ -142,15 +278,22 @@ class AppTests(unittest.TestCase):
                 'GOOGLE_API_KEY': '',
             },
         ):
+
             self.assertEqual(
                 provider_order('auto', 'rag_agent'),
                 ['ollama'],
             )
 
+    # ========================================================
+    # 6. CLOUD PROVIDER FALLBACK TESTS
+    # ========================================================
+
     def test_cloud_failure_uses_ollama(self):
+
         calls = []
 
         class Model:
+
             def __init__(self, provider):
                 self.provider = provider
 
@@ -160,12 +303,15 @@ class AppTests(unittest.TestCase):
                 if self.provider != 'ollama':
                     raise RuntimeError('private failure')
 
-                return SimpleNamespace(content='Safe answer')
+                return SimpleNamespace(
+                    content='Safe answer'
+                )
 
         with patch(
             'llm.factory.get_chat_model',
             side_effect=Model,
         ):
+
             result = asyncio.run(
                 answer_with_fallback(
                     'claude',
@@ -185,14 +331,17 @@ class AppTests(unittest.TestCase):
         )
 
     def test_all_providers_fail(self):
+
         with patch(
             'llm.factory.get_chat_model',
             side_effect=RuntimeError('private error'),
         ):
+
             with self.assertRaisesRegex(
                 RuntimeError,
                 'No chat provider',
             ):
+
                 asyncio.run(
                     answer_with_fallback(
                         'chatgpt',
@@ -201,11 +350,12 @@ class AppTests(unittest.TestCase):
                     )
                 )
 
-    # --------------------------------------------------------
-    # SSE response and privacy tests
-    # --------------------------------------------------------
+    # ========================================================
+    # 7. SERVER-SENT EVENTS AND PRIVACY TESTS
+    # ========================================================
 
     def test_sse_sanitizes_and_has_no_sources(self):
+
         async def answer(*args):
             return (
                 'Demo price ₹129,999 [1].\n'
@@ -218,13 +368,21 @@ class AppTests(unittest.TestCase):
             'main.answer_with_fallback',
             side_effect=answer,
         ):
+
             response = self.client.post(
                 '/chat/stream',
                 json={'message': 'P001 price'},
             )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertIn('₹129,999', response.text)
+        self.assertEqual(
+            response.status_code,
+            200,
+        )
+
+        self.assertIn(
+            '₹129,999',
+            response.text,
+        )
 
         for private in (
             'private.md',
@@ -232,11 +390,19 @@ class AppTests(unittest.TestCase):
             'event: sources',
             '[1]',
         ):
-            self.assertNotIn(private, response.text)
 
-        self.assertIn('"ok": true', response.text)
+            self.assertNotIn(
+                private,
+                response.text,
+            )
+
+        self.assertIn(
+            '"ok": true',
+            response.text,
+        )
 
     def test_error_does_not_leak(self):
+
         async def fail(*args):
             raise RuntimeError(
                 r'api-key secret D:\private\file.json'
@@ -246,16 +412,29 @@ class AppTests(unittest.TestCase):
             'main.answer_with_fallback',
             side_effect=fail,
         ):
+
             response = self.client.post(
                 '/chat/stream',
                 json={'message': 'P001 price'},
             )
 
-        self.assertIn('"ok": false', response.text)
-        self.assertNotIn('private', response.text)
-        self.assertNotIn('secret', response.text)
+        self.assertIn(
+            '"ok": false',
+            response.text,
+        )
+
+        self.assertNotIn(
+            'private',
+            response.text,
+        )
+
+        self.assertNotIn(
+            'secret',
+            response.text,
+        )
 
     def test_relative_paths_and_inline_sources(self):
+
         text = public_answer(
             'Answer.\n'
             'product_manuals/private.md\n'
@@ -263,13 +442,17 @@ class AppTests(unittest.TestCase):
             'Sources: hidden.pdf'
         )
 
-        self.assertEqual(text, 'Answer.')
+        self.assertEqual(
+            text,
+            'Answer.',
+        )
 
-    # --------------------------------------------------------
-    # API request validation tests
-    # --------------------------------------------------------
+    # ========================================================
+    # 8. API REQUEST VALIDATION TESTS
+    # ========================================================
 
     def test_invalid_requests(self):
+
         invalid_requests = (
             {
                 'message': ' ',
@@ -290,7 +473,9 @@ class AppTests(unittest.TestCase):
         )
 
         for request in invalid_requests:
+
             with self.subTest(request=request):
+
                 response = self.client.post(
                     '/chat/stream',
                     json=request,
@@ -301,13 +486,18 @@ class AppTests(unittest.TestCase):
                     422,
                 )
 
-    # --------------------------------------------------------
-    # RAG fallback and index protection tests
-    # --------------------------------------------------------
+    # ========================================================
+    # 9. RAG FALLBACK AND INDEX SAFETY TESTS
+    # ========================================================
 
     def test_keyword_fallback(self):
+
         async def answer(provider, agent, messages):
-            self.assertEqual(agent, 'rag_agent')
+
+            self.assertEqual(
+                agent,
+                'rag_agent',
+            )
 
             self.assertIn(
                 'cooling',
@@ -331,6 +521,7 @@ class AppTests(unittest.TestCase):
                 side_effect=answer,
             ),
         ):
+
             response = self.client.post(
                 '/chat/stream',
                 json={'message': 'AC not cooling'},
@@ -347,10 +538,14 @@ class AppTests(unittest.TestCase):
         )
 
     def test_failed_rebuild_preserves_active_index(self):
+
         from rag.rebuild import rebuild
 
         with tempfile.TemporaryDirectory() as folder:
-            pointer = Path(folder) / 'active_collection.txt'
+
+            pointer = (
+                Path(folder) / 'active_collection.txt'
+            )
 
             pointer.write_text(
                 'previous_verified_collection',
@@ -367,11 +562,14 @@ class AppTests(unittest.TestCase):
                     side_effect=RuntimeError('provider failed'),
                 ),
             ):
+
                 with self.assertRaises(RuntimeError):
                     rebuild()
 
             self.assertEqual(
-                pointer.read_text(encoding='utf-8'),
+                pointer.read_text(
+                    encoding='utf-8'
+                ),
                 'previous_verified_collection',
             )
 
