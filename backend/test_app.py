@@ -37,7 +37,7 @@ class AppTests(unittest.TestCase):
 
         self.assertEqual(
             [model['provider'] for model in health['models']],
-            ['auto', 'claude', 'chatgpt', 'gemini', 'ollama'],
+            ['auto', 'claude', 'chatgpt', 'gemini', 'gemma', 'ollama'],
         )
 
         products = self.client.get('/products').json()
@@ -255,17 +255,17 @@ class AppTests(unittest.TestCase):
 
             self.assertEqual(
                 provider_order('auto', 'sales_agent'),
-                ['gemini', 'chatgpt', 'claude', 'ollama'],
+                ['gemini', 'gemma', 'ollama', 'chatgpt', 'claude'],
             )
 
             self.assertEqual(
                 provider_order('auto', 'rag_agent'),
-                ['gemini', 'chatgpt', 'claude', 'ollama'],
+                ['gemini', 'gemma', 'ollama', 'chatgpt', 'claude'],
             )
 
         self.assertEqual(
             provider_order('claude', 'sales_agent'),
-            ['claude', 'ollama'],
+            ['claude'],
         )
 
     def test_missing_keys(self):
@@ -288,47 +288,11 @@ class AppTests(unittest.TestCase):
     # 6. CLOUD PROVIDER FALLBACK TESTS
     # ========================================================
 
-    def test_cloud_failure_uses_ollama(self):
-
-        calls = []
-
-        class Model:
-
-            def __init__(self, provider):
-                self.provider = provider
-
-            async def ainvoke(self, messages):
-                calls.append(self.provider)
-
-                if self.provider != 'ollama':
-                    raise RuntimeError('private failure')
-
-                return SimpleNamespace(
-                    content='Safe answer'
-                )
-
-        with patch(
-            'llm.factory.get_chat_model',
-            side_effect=Model,
-        ):
-
-            result = asyncio.run(
-                answer_with_fallback(
-                    'claude',
-                    'rag_agent',
-                    [HumanMessage(content='test')],
-                )
-            )
-
-            self.assertEqual(
-                result,
-                ('Safe answer', 'ollama'),
-            )
-
-        self.assertEqual(
-            calls,
-            ['claude', 'ollama'],
-        )
+    def test_explicit_cloud_failure_does_not_switch_provider(self):
+        with patch('llm.factory.get_chat_model', side_effect=RuntimeError('private')) as model:
+            with self.assertRaisesRegex(RuntimeError, 'No chat provider'):
+                asyncio.run(answer_with_fallback('claude', 'rag_agent', []))
+            model.assert_called_once_with('claude')
 
     def test_all_providers_fail(self):
 

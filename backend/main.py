@@ -279,9 +279,8 @@ async def rag_agent(state):
 
             return ""
 
-        context = await asyncio.to_thread(
-            retrieve
-        )
+        # Retrieval is optional; its deadline must leave time for the answer.
+        context = await asyncio.wait_for(asyncio.to_thread(retrieve), timeout=12)
 
         if not context:
             raise LookupError(
@@ -606,7 +605,8 @@ async def chat_stream(request: ChatRequest):
                     if not task.done():
                         yield ": keepalive\n\n"
 
-                text, actual_provider = await task
+                answer = await task
+                text, actual_provider = answer
 
             finally:
 
@@ -666,6 +666,9 @@ async def chat_stream(request: ChatRequest):
                 "done",
                 {
                     "ok": True,
+                    "usage": getattr(answer, "usage", None),
+                    "model": getattr(answer, "model", None),
+                    "usage_complete": getattr(answer, "usage_complete", False),
                     "agent": agent,
                     "intent": intent,
                     "provider": actual_provider,
@@ -686,8 +689,9 @@ async def chat_stream(request: ChatRequest):
                 "error",
                 {
                     "message": (
-                        "The assistant is temporarily unavailable. "
-                        "Please try again shortly."
+                        "The assistant could not answer. Error: "
+                        + getattr(exc, "code", "internal_error")
+                        + ". Please retry after resolving this provider issue."
                     ),
                 },
             )
