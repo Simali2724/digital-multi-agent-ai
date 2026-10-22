@@ -9,6 +9,8 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from llm.factory import ProviderUnavailable, answer_with_fallback
 from llm.language import devanagari_share, expects_english, language_mismatch, prepare_language
 from main import app
+from messages import message
+from policy import analyze_message
 
 
 CASES = [
@@ -49,8 +51,21 @@ class LanguageTests(unittest.TestCase):
         self.assertFalse(language_mismatch("The product label says नमस्ते, which is a greeting meaning hello in English.", True))
         self.assertEqual(devanagari_share("₹ 129,999!"), 0)
 
+    def test_questions_excluded_from_model_retry_test_are_refused_by_policy(self):
+        # These reach no model at all: the business-scope policy answers them first.
+        excluded = [question for question, _ in CASES if analyze_message(question).action != "allow"]
+        self.assertEqual(excluded, ["Who will win the next election?"])
+        with patch("llm.factory.get_chat_model") as get_model:
+            response = TestClient(app).post("/chat/stream", json={
+                "message": excluded[0], "provider": "gemini", "reply_language": "english",
+            })
+        get_model.assert_not_called()
+        self.assertIn(message("scope_general", "english").split(".")[0], response.text)
+
     def test_bad_reply_is_retried_before_any_tokens_are_streamed(self):
         for question, bad_reply in CASES:
+            if analyze_message(question).action != "allow":
+                continue
             with self.subTest(question=question):
                 good_reply = "Hello! I can help with Reliance Digital demo product information."
                 model = SimpleNamespace(ainvoke=AsyncMock(side_effect=[

@@ -143,7 +143,7 @@ class AppTests(unittest.TestCase):
                 'system_prompt': 'Test prompt',
             }
 
-        async def fake_answer(*args):
+        async def fake_answer(*args, **kwargs):
             return 'Test response', 'ollama'
 
         cases = [
@@ -323,7 +323,7 @@ class AppTests(unittest.TestCase):
 
     def test_sse_sanitizes_and_has_no_sources(self):
 
-        async def answer(*args):
+        async def answer(*args, **kwargs):
             return (
                 'Demo price ₹129,999 [1].\n'
                 'D:\\reliance-data\\private.md\n\n'
@@ -370,7 +370,7 @@ class AppTests(unittest.TestCase):
 
     def test_error_does_not_leak(self):
 
-        async def fail(*args):
+        async def fail(*args, **kwargs):
             raise RuntimeError(
                 r'api-key secret D:\private\file.json'
             )
@@ -459,21 +459,36 @@ class AppTests(unittest.TestCase):
 
     def test_keyword_fallback(self):
 
-        async def answer(provider, agent, messages):
+        async def answer(provider, agent, messages, **kwargs):
 
             self.assertEqual(
                 agent,
                 'rag_agent',
             )
 
+            # Retrieved text is untrusted data in its own non-system message,
+            # never part of the trusted system prompt.
+            reference = next(
+                message
+                for message in messages
+                if message.additional_kwargs.get('untrusted_reference')
+            )
+
+            self.assertEqual(messages[0].type, 'system')
+
             self.assertIn(
+                'cooling',
+                reference.content,
+            )
+
+            self.assertNotIn(
                 'cooling',
                 messages[0].content,
             )
 
             self.assertNotIn(
                 'SECRET_PATH',
-                messages[0].content,
+                reference.content,
             )
 
             return 'Check cooling mode.', 'ollama'

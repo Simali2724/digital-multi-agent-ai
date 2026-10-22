@@ -11,7 +11,7 @@ export type HistoryItem = {
   content: string
 }
 
-export type ReplyLanguage = "english" | "hindi" | "telugu" | "bengali" | "tamil" | "assamese" | "marathi"
+export type ReplyLanguage = "auto" | "english" | "hindi" | "telugu" | "bengali" | "tamil" | "assamese" | "marathi"
 
 export type Citation = {
   label: string
@@ -37,6 +37,8 @@ export type ChatRequest = {
 
 export type StreamHandlers = {
   onAgent?: (agent: string) => void
+  // Fired when the customer asks in chat to change the reply language, so the selector can follow.
+  onLanguage?: (language: ReplyLanguage, changed: boolean) => void
   onProvider?: (provider: string) => void
   onToken?: (token: string) => void
   onSources?: (sources: Citation[]) => void
@@ -105,6 +107,18 @@ function handleSseFrame(
           }
         ).agent,
       ),
+    )
+  }
+
+  if ("reply_language" in payload) {
+    const { reply_language, language_changed } = payload as {
+      reply_language: ReplyLanguage
+      language_changed?: boolean
+    }
+
+    handlers.onLanguage?.(
+      reply_language,
+      language_changed === true,
     )
   }
 

@@ -136,6 +136,7 @@ const MODELS: {
 
 const PROVIDER_LABELS: Record<string, string> = {
   catalog: "Demo catalog",
+  guard: "Demo scope check",
   auto: "Auto",
   claude: "Claude",
   chatgpt: "ChatGPT",
@@ -146,6 +147,7 @@ const PROVIDER_LABELS: Record<string, string> = {
 
 const REPLY_LANGUAGES: { value: ReplyLanguage; label: string }[] = [
   { value: "english", label: "English" },
+  { value: "auto", label: "Auto · match my message" },
   { value: "hindi", label: "Hindi · हिन्दी" },
   { value: "telugu", label: "Telugu · తెలుగు" },
   { value: "bengali", label: "Bengali · বাংলা" },
@@ -562,6 +564,13 @@ export default function Home() {
           // -----------------------------------------------
           // Agent selected by LangGraph
           // -----------------------------------------------
+
+          onLanguage:
+            (language, changed) => {
+              if (changed) {
+                saveReplyLanguage(language)
+              }
+            },
 
           onAgent:
             (agent) => {

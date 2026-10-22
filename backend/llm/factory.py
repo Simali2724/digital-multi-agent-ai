@@ -3,14 +3,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
+import random
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
+from contextvars import ContextVar
 from functools import lru_cache
 from typing import Literal
 
 from config import key_present
 from privacy import public_answer
 from .language import ReplyLanguage, language_mismatch, prepare_language
+
+from langchain_core.messages import SystemMessage
 
 from langchain_anthropic import ChatAnthropic
 from langchain_openai import ChatOpenAI
@@ -135,8 +142,9 @@ def provider_order(
 class ProviderUnavailable(RuntimeError):
     """Safe public error without exposing credentials."""
 
-    def __init__(self, code):
+    def __init__(self, code, reason=None):
         self.code = code
+        self.reason = reason
 
         super().__init__(
             f"No chat provider available ({code})."
@@ -144,15 +152,22 @@ class ProviderUnavailable(RuntimeError):
 
 
 def failure_code(exc):
+    """Classify an exception into a safe, public failure class.
+
+    rate_limit / timeout / temporary_connection are retryable. authentication, not_configured and
+    invalid_request are permanent and never retried. language_mismatch and policy_violation are
+    application validation failures, not infrastructure errors.
+    """
+
+    if isinstance(exc, ProviderUnavailable):
+        return exc.code
+
     status = (
         getattr(exc, "status_code", None)
         or getattr(exc, "code", None)
     )
 
     name = type(exc).__name__.lower()
-
-    if status == "language_mismatch":
-        return "language_mismatch"
 
     if (
         status in (401, 403)
@@ -180,7 +195,88 @@ def failure_code(exc):
     ):
         return "temporary_connection"
 
+    if (
+        status in (400, 404, 405, 409, 413, 415, 422)
+        or "badrequest" in name
+        or "invalidrequest" in name
+        or "unprocessable" in name
+    ):
+        return "invalid_request"
+
+    if str(exc).endswith(" is not configured"):
+        return "not_configured"
+
     return "provider_error"
+
+
+RETRYABLE_CODES = frozenset({"rate_limit", "temporary_connection", "timeout"})
+
+# Policy violations a second attempt on the same provider can plausibly fix. The hint is trusted text added to
+# the system message; it never includes the rejected answer. Other violations (leak, code) go to the next provider.
+CORRECTION_HINTS = {
+    "false_refusal": (
+        "Your previous reply wrongly refused an in-scope request. Answer the customer's question helpfully "
+        "now, using only supplied facts."
+    ),
+    "unverified_price": (
+        "Your previous reply quoted a price that is not in the supplied data. Quote only supplied mock prices "
+        "or say the price is not available."
+    ),
+}
+
+
+def with_hint(prepared, hint: str):
+    corrected = list(prepared)
+
+    if corrected and isinstance(corrected[0], SystemMessage):
+        corrected[0] = SystemMessage(content=corrected[0].content + "\n\n" + hint)
+
+    return corrected
+
+
+def retry_after_seconds(exc) -> float | None:
+    """Seconds the provider asked us to wait (Retry-After header or attribute), if any."""
+
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    value = None
+
+    if headers is not None:
+        try:
+            value = headers.get("retry-after") or headers.get("Retry-After")
+        except Exception:
+            value = None
+
+    if value is None:
+        value = getattr(exc, "retry_after", None)
+
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        try:
+            retry_at = parsedate_to_datetime(str(value))
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            seconds = max(0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    # Long waits must reach the deadline check, which skips this provider.
+    # Discarding them would retry before the provider allows it.
+    return seconds if math.isfinite(seconds) and seconds >= 0 else None
+
+
+def backoff_delay(attempt: int, retry_after: float | None = None) -> float:
+    """Bounded exponential backoff with full jitter; never shorter than the provider's Retry-After."""
+
+    base = float(os.getenv("LLM_BACKOFF_BASE_SECONDS", "1"))
+    cap = float(os.getenv("LLM_BACKOFF_CAP_SECONDS", "8"))
+    delay = random.uniform(0, min(cap, base * 2 ** attempt))
+
+    return max(delay, retry_after) if retry_after is not None else delay
+
+
+# Correlation id for one customer request; set by the API layer and included in sanitized logs.
+request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
 
 
 # ============================================================
@@ -457,25 +553,30 @@ async def answer_with_fallback(
     agent: str,
     messages,
     reply_language: ReplyLanguage = "auto",
+    validator=None,
 ):
     """
-    Retry transient failures once.
+    Answer with bounded, coordinated retries and optional provider fallback.
 
-    In auto mode, move to the next configured
-    provider if the current provider fails.
-
-    Explicit provider selection does not
-    automatically switch models.
-
-    Report usage for the successful provider.
-    Mark usage as incomplete if earlier
-    provider attempts failed.
+    * Retryable failures (rate limit, timeout, connection) are retried with exponential backoff and full
+      jitter, honoring Retry-After. At most LLM_MAX_ATTEMPTS attempts per provider (default 3), all inside
+      one overall deadline (LLM_TIMEOUT_SECONDS). SDK-level retries are disabled (max_retries=0) so
+      attempts are never multiplied. If the wait would exhaust the deadline, move to the next provider.
+    * Authentication, configuration and invalid-request failures are never retried.
+    * There are no tools, so a retry cannot repeat a side effect.
+    * Every attempt and every fallback provider receives the same prepared messages, so scope, language,
+      privacy and injection rules are identical. `validator(text)` returns a violation reason or None; a
+      violating answer is discarded and the next provider is tried.
+    * Explicit provider selection never switches provider. Auto tries the next configured provider.
+    * Usage is reported for the successful provider and marked incomplete after earlier failures.
     """
 
     last_code = "not_configured"
+    last_reason = None
     had_failure = False
     original_messages = messages
-    messages, target_language = prepare_language(messages, reply_language=reply_language)
+    prepared, target_language = prepare_language(messages, reply_language=reply_language)
+    request_id = request_id_var.get()
 
     timeout = min(
         120,
@@ -489,6 +590,9 @@ async def answer_with_fallback(
             ),
         ),
     )
+    max_attempts = max(1, int(os.getenv("LLM_MAX_ATTEMPTS", "3")))
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
 
     try:
         async with asyncio.timeout(timeout):
@@ -497,8 +601,10 @@ async def answer_with_fallback(
                 provider,
                 agent,
             ):
+                messages = prepared
 
-                for attempt in range(2):
+                for attempt in range(max_attempts):
+                    safe_text = ""
 
                     try:
                         model = get_chat_model(candidate)
@@ -516,15 +622,15 @@ async def answer_with_fallback(
                                 "Empty model answer"
                             )
 
-                        if language_mismatch(public_answer(text), target_language):
+                        safe_text = public_answer(text)
+
+                        if language_mismatch(safe_text, target_language):
                             raise ProviderUnavailable("language_mismatch")
 
-                        # ------------------------------------
-                        # TOKEN REPORTING FIX
-                        #
-                        # Report usage of the successful model
-                        # even when earlier providers failed.
-                        # ------------------------------------
+                        reason = validator(safe_text) if validator else None
+
+                        if reason:
+                            raise ProviderUnavailable("policy_violation", reason)
 
                         usage = response_usage(response)
 
@@ -545,32 +651,55 @@ async def answer_with_fallback(
                         last_code = failure_code(
                             exc
                         )
+                        last_reason = getattr(exc, "reason", None)
 
                         log.warning(
                             "Provider %s failed: %s "
-                            "(attempt %s; type=%s)",
+                            "(attempt %s; type=%s; request_id=%s%s)",
                             candidate,
                             last_code,
                             attempt + 1,
                             type(exc).__name__,
+                            request_id,
+                            f"; reason={last_reason}" if last_reason else "",
                         )
 
+                        if last_code == "policy_violation":
+                            if (
+                                last_reason in CORRECTION_HINTS
+                                and attempt == 0
+                                and attempt + 1 < max_attempts
+                            ):
+                                messages = with_hint(prepared, CORRECTION_HINTS[last_reason])
+                                continue
+
+                            # Unsafe output: never retry the same prompt; try the next provider.
+                            break
+
                         if (
-                            attempt == 0
-                            and last_code in (
-                                "language_mismatch",
-                                "rate_limit",
-                                "temporary_connection",
-                                "timeout",
-                            )
+                            last_code == "language_mismatch"
+                            and attempt == 0
+                            and attempt + 1 < max_attempts
                         ):
-                            if last_code == "language_mismatch":
-                                messages, _ = prepare_language(
-                                    original_messages, retry=True, reply_language=reply_language,
-                                    draft=public_answer(text),
-                                )
-                            else:
-                                await asyncio.sleep(2)
+                            messages, _ = prepare_language(
+                                original_messages, retry=True, reply_language=reply_language,
+                                draft=safe_text,
+                            )
+                            continue
+
+                        if (
+                            last_code in RETRYABLE_CODES
+                            and attempt + 1 < max_attempts
+                        ):
+                            delay = backoff_delay(
+                                attempt,
+                                retry_after_seconds(exc),
+                            )
+
+                            if delay >= deadline - loop.time() - 1:
+                                break
+
+                            await asyncio.sleep(delay)
                             continue
 
                         break
@@ -578,7 +707,7 @@ async def answer_with_fallback(
     except TimeoutError:
         last_code = "timeout"
 
-    raise ProviderUnavailable(last_code)
+    raise ProviderUnavailable(last_code, last_reason)
 
 
 # ============================================================

@@ -111,3 +111,41 @@ The current implementation and checks are complete for this batch. The next work
 - Both selectors' triggers now show labels (`Bengali · বাংলা`, `Auto (Recommended) — …`) instead of raw values (`bengali`, `auto`), using Base UI's `Select.Value` render-function children.
 - `tsc --noEmit` and ESLint pass. Browser-checked in the Claude desktop built-in browser against `next dev`: selected Bengali, reloaded, selection restored, labels rendered, no hydration errors (only connection-refused errors because the backend was not running). No chat request was sent during this check.
 - Added `.claude/launch.json` (frontend dev server config for the desktop app's browser preview).
+
+## Scope, injection, language and resilience session (2026-10-22, Claude)
+
+Status: implemented and running locally. Ready for the user to test at `http://127.0.0.1:3000`.
+
+### What changed
+- **Business scope (`backend/policy.py`, `backend/prompts.py`)**: out-of-scope tasks (code, homework, general knowledge, politics, creative writing, personal advice) get one short localized boundary reply and no answer. Mixed requests answer only the Reliance Digital part, with a short localized prefix. Uncertain programming mentions get a clarifying question. Judged by substance, not keywords. `backend/scope_guard.py` was replaced by this module.
+- **Injection and disclosure**: disclosure and override attempts are removed before generation and get localized replies. Retrieved text and image descriptions travel as delimited, non-system "untrusted reference data". System messages contain only trusted text. Client history cannot carry a `system` role (HTTP 422). Customer names are removed from model-visible order and ticket data.
+- **Output validation before streaming**: protected-text leakage (12-word overlap, including base64, hex, ROT13 and reversed text), code, refusal followed by an answer, refusal of an in-scope request, and currency amounts not in the demo data or the customer's own numbers. Recoverable violations get one corrective retry on the same provider; unsafe ones go to the next provider.
+- **Language contract (`backend/llm/language.py`)**: explicit in-chat request > selector > latest substantive message > earlier customer messages > English. Explicit requests are announced in the `meta` event (`reply_language`, `language_changed`), and the UI selector follows. Assistant replies and retrieved text never choose the language. Refusals and errors come from `backend/messages.py` in the resolved language.
+- **Records (`backend/record_answers.py`)**: order and ticket IDs get a deterministic answer from stored mock fields. Unknown IDs get an explicit "no record" reply.
+- **Retries and fallback (`backend/llm/factory.py`)**: retryable errors (rate limit, timeout, connection) get up to `LLM_MAX_ATTEMPTS` (default 3) attempts with exponential backoff, full jitter and `Retry-After`, all inside one deadline. Authentication, configuration and invalid-request errors are not retried. SDK retries are off. Fallback providers get the same policy. Errors reach the customer as a localized sentence with a reference id.
+- **Frontend**: the selector gained an Auto option. `frontend/lib/api.ts` handles the `reply_language` meta event so the selector follows an in-chat change. Lint and TypeScript pass.
+- **Eval (`backend/eval_live.py`, `backend/script_check.py`)**: live checks report behavior, provider errors and the Devanagari script check separately. Factual correctness is not evaluated (no AI judge in this repo).
+
+### Tests (from `backend`)
+`.\.venv\Scripts\python.exe -m unittest test_policy test_language_contract test_injection test_resilience test_script_check test_catalog_answers test_language test_app test_reliability`
+
+Result: **123 tests, OK**. Frontend: `tsc --noEmit` and ESLint on `app/page.tsx lib/api.ts` pass.
+
+### Live evaluation
+- Run 2 (before the last two fixes): 26 behavior PASS, 0 FAIL, 2 PROVIDER_ERROR (timeouts or rate limits from the cloud fallback chain), 25 script-check pass.
+- After the fixes, the iPhone background-apps case passes live. The full evaluation was not rerun after the last change.
+- Gemini and Gemma return authentication or HTTP errors in this environment, so Auto falls through to Ollama. ChatGPT returns rate limits. Those cases are provider-availability results, not defense results.
+
+### Not verified or not available
+- The two runs named in the ticket (`20261022-060252-47c2`, `20261022-062118-ad6a`) were not found in the studio database, reports or logs.
+- The literal text "The assistant is temporarily unavailable" does not exist in this repository. The matching failure path in the logs is an OpenAI rate limit followed by an Ollama connection error.
+- The external AI judge and Chatbot-Compare exact-language check are not in this repository and were not run.
+- Factual accuracy of free-form model answers is not evaluated.
+- Native-speaker review of the seven languages is still needed. The refusal and error wording is machine-drafted.
+- Rule-based scope and injection detection cannot be complete. English and Romanized Hindi are covered best. Other languages rely on the prompt and output checks.
+- The 12-word leak threshold was chosen to avoid false positives. It is a heuristic.
+
+### Remaining items
+1. Rerun `eval_live.py` once all providers are reachable, and review the two provider-error cases.
+2. Native review of the localized messages in `backend/messages.py`.
+3. Add the Chatbot-Compare fixtures from the original comparison inputs, if they are provided.
