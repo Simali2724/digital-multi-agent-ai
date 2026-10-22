@@ -8,6 +8,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react"
 
 import {
@@ -52,6 +53,7 @@ import {
   fileToImagePayload,
   ImagePayload,
   Provider,
+  ReplyLanguage,
   streamChat,
 } from "@/lib/api"
 
@@ -68,6 +70,8 @@ type Message = {
     | "assistant"
 
   content: string
+
+  failed?: boolean
 
   agent?: string
 
@@ -118,6 +122,11 @@ const MODELS: {
     model: "Google AI",
   },
   {
+    provider: "gemma",
+    label: "Gemma 4",
+    model: "Google AI",
+  },
+  {
     provider: "ollama",
     label: "Ollama",
     model: "Local model",
@@ -126,11 +135,50 @@ const MODELS: {
 
 
 const PROVIDER_LABELS: Record<string, string> = {
+  catalog: "Demo catalog",
   auto: "Auto",
   claude: "Claude",
   chatgpt: "ChatGPT",
   gemini: "Gemini",
+  gemma: "Gemma 4",
   ollama: "Ollama",
+}
+
+const REPLY_LANGUAGES: { value: ReplyLanguage; label: string }[] = [
+  { value: "english", label: "English" },
+  { value: "hindi", label: "Hindi · हिन्दी" },
+  { value: "telugu", label: "Telugu · తెలుగు" },
+  { value: "bengali", label: "Bengali · বাংলা" },
+  { value: "tamil", label: "Tamil · தமிழ்" },
+  { value: "assamese", label: "Assamese · অসমীয়া" },
+  { value: "marathi", label: "Marathi · मराठी" },
+]
+
+const REPLY_LANGUAGE_STORAGE_KEY = "reply-language"
+const DEFAULT_REPLY_LANGUAGE: ReplyLanguage = "english"
+const replyLanguageListeners = new Set<() => void>()
+// Fallback when storage is unavailable (private mode, blocked site data).
+let memoryReplyLanguage: ReplyLanguage = DEFAULT_REPLY_LANGUAGE
+
+function readReplyLanguage(): ReplyLanguage {
+  let saved: string | null = null
+  try { saved = localStorage.getItem(REPLY_LANGUAGE_STORAGE_KEY) } catch {}
+  return REPLY_LANGUAGES.find((item) => item.value === saved)?.value ?? memoryReplyLanguage
+}
+
+function saveReplyLanguage(value: ReplyLanguage) {
+  memoryReplyLanguage = value
+  try { localStorage.setItem(REPLY_LANGUAGE_STORAGE_KEY, value) } catch {}
+  replyLanguageListeners.forEach((listener) => listener())
+}
+
+function subscribeReplyLanguage(listener: () => void) {
+  replyLanguageListeners.add(listener)
+  window.addEventListener("storage", listener)
+  return () => {
+    replyLanguageListeners.delete(listener)
+    window.removeEventListener("storage", listener)
+  }
 }
 
 
@@ -229,6 +277,12 @@ function AgentBadge({
 // ============================================================
 
 export default function Home() {
+  // Server render uses the English default; the client then reads the saved choice.
+  const replyLanguage = useSyncExternalStore(
+    subscribeReplyLanguage,
+    readReplyLanguage,
+    () => DEFAULT_REPLY_LANGUAGE,
+  )
   const [products, setProducts] = useState<{ id: string; name: string; price: string; warranty: string }[]>([])
   useEffect(() => {
     let active = true
@@ -413,7 +467,7 @@ export default function Home() {
       messages.slice(-12)
         .filter(
           (message) =>
-            Boolean(
+            !message.failed && Boolean(
               message
                 .content
                 .trim(),
@@ -486,6 +540,8 @@ export default function Home() {
             messageText,
 
           provider,
+
+          reply_language: replyLanguage,
 
           history:
             currentHistory,
@@ -585,8 +641,8 @@ export default function Home() {
             (
               backendError,
             ) => {
-              setError(backendError)
-              setMessages((previous) => previous.map((message) => message.id === assistantMessageId ? { ...message, content: "Sorry, this request could not be completed. Please try again." } : message))
+              setError(null)
+              setMessages((previous) => previous.map((message) => message.id === assistantMessageId ? { ...message, content: backendError, failed: true } : message))
             },
         },
       )
@@ -614,6 +670,8 @@ export default function Home() {
               )
                 ? {
                     ...message,
+
+                    failed: true,
 
                     content:
                       (
@@ -750,6 +808,7 @@ export default function Home() {
                   MODEL SELECTOR
               ============================================ */}
 
+              <div className="flex w-full flex-col gap-3 sm:w-auto">
               <Select
                 value={provider}
 
@@ -767,7 +826,9 @@ export default function Home() {
                     sm:w-[280px]
                   "
                 >
-                  <SelectValue />
+                  <SelectValue>
+                    {() => `${selectedModel.label} — ${selectedModel.model}`}
+                  </SelectValue>
                 </SelectTrigger>
 
                 <SelectContent>
@@ -798,6 +859,31 @@ export default function Home() {
                   }
                 </SelectContent>
               </Select>
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor="reply-language" className="text-sm font-medium">
+                  Reply language
+                </label>
+                <Select
+                  value={replyLanguage}
+                  onValueChange={(value) => saveReplyLanguage(value as ReplyLanguage)}
+                  disabled={isStreaming}
+                >
+                  <SelectTrigger id="reply-language" className="w-full sm:w-[280px]">
+                    <SelectValue>
+                      {(value: ReplyLanguage) =>
+                        REPLY_LANGUAGES.find((item) => item.value === value)?.label ?? value}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {REPLY_LANGUAGES.map((language) => (
+                      <SelectItem key={language.value} value={language.value}>
+                        {language.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              </div>
             </div>
           </CardHeader>
 

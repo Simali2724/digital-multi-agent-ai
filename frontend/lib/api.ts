@@ -3,12 +3,15 @@ export type Provider =
   | "claude"
   | "chatgpt"
   | "gemini"
+  | "gemma"
   | "ollama"
 
 export type HistoryItem = {
   role: "user" | "assistant"
   content: string
 }
+
+export type ReplyLanguage = "english" | "hindi" | "telugu" | "bengali" | "tamil" | "assamese" | "marathi"
 
 export type Citation = {
   label: string
@@ -26,6 +29,7 @@ export type ImagePayload = {
 export type ChatRequest = {
   message: string
   provider: Provider
+  reply_language?: ReplyLanguage
   history: HistoryItem[]
   image?: ImagePayload
   ingest_image_to_rag?: boolean

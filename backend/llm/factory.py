@@ -9,6 +9,8 @@ from functools import lru_cache
 from typing import Literal
 
 from config import key_present
+from privacy import public_answer
+from .language import ReplyLanguage, language_mismatch, prepare_language
 
 from langchain_anthropic import ChatAnthropic
 from langchain_openai import ChatOpenAI
@@ -148,6 +150,9 @@ def failure_code(exc):
     )
 
     name = type(exc).__name__.lower()
+
+    if status == "language_mismatch":
+        return "language_mismatch"
 
     if (
         status in (401, 403)
@@ -451,6 +456,7 @@ async def answer_with_fallback(
     provider: Provider,
     agent: str,
     messages,
+    reply_language: ReplyLanguage = "auto",
 ):
     """
     Retry transient failures once.
@@ -468,6 +474,8 @@ async def answer_with_fallback(
 
     last_code = "not_configured"
     had_failure = False
+    original_messages = messages
+    messages, target_language = prepare_language(messages, reply_language=reply_language)
 
     timeout = min(
         120,
@@ -508,6 +516,9 @@ async def answer_with_fallback(
                                 "Empty model answer"
                             )
 
+                        if language_mismatch(public_answer(text), target_language):
+                            raise ProviderUnavailable("language_mismatch")
+
                         # ------------------------------------
                         # TOKEN REPORTING FIX
                         #
@@ -547,12 +558,19 @@ async def answer_with_fallback(
                         if (
                             attempt == 0
                             and last_code in (
+                                "language_mismatch",
                                 "rate_limit",
                                 "temporary_connection",
                                 "timeout",
                             )
                         ):
-                            await asyncio.sleep(2)
+                            if last_code == "language_mismatch":
+                                messages, _ = prepare_language(
+                                    original_messages, retry=True, reply_language=reply_language,
+                                    draft=public_answer(text),
+                                )
+                            else:
+                                await asyncio.sleep(2)
                             continue
 
                         break
