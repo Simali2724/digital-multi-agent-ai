@@ -21,6 +21,9 @@ from main import app
 class AppTests(unittest.TestCase):
 
     def setUp(self):
+        self.catalog_patch = patch('main.catalog_answer', return_value=None)
+        self.catalog_patch.start()
+        self.addCleanup(self.catalog_patch.stop)
         self.client = TestClient(app)
 
     # ========================================================
